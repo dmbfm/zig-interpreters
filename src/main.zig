@@ -44,6 +44,14 @@ const Expr = struct {
         return .{ .kind = .{ .Literal = t } };
     }
 
+    pub fn literalNumber(num: f64) Expr {
+        return .{ .kind = .{ .Literal = Token.number(num) } };
+    }
+
+    pub fn literalString(str: []const u8) Expr {
+        return .{ .kind = .{ .Literal = Token.init(.{ .String = str }, str) } };
+    }
+
     pub fn grouping(expr: *Expr) Expr {
         return .{ .kind = .{ .Grouping = expr } };
     }
@@ -165,6 +173,9 @@ const Token = struct {
         switch (self.kind) {
             .Number => |num| {
                 try wr.print("{}", .{num});
+            },
+            .String => |str| {
+                try wr.print("\"{s}\"", .{str});
             },
             else => {
                 try wr.print("{s}", .{self.string});
@@ -408,14 +419,12 @@ pub fn main() !void {
 
     var interpreter = Intepreter.init(allocator);
 
-    // var expr = Expr.binary(
-    //     &Expr.literal(Token.number(2.0)),
-    //     Token.init(.Star, "*"),
-    //     &Expr.binary(&Expr.literal(Token.number(5.23)), Token.init(.Plus, "+"), &Expr.literal(Token.number(2.34))),
-    // );
+    var expr = Expr.binary(&Expr.literalNumber(2.0), Token.init(.Star, "*"), &Expr.binary(&Expr.literalNumber(32.34), Token.init(.Plus, "+"),
+    // &Expr.literalNumber(2.34),
+    &Expr.literalString("hello!")));
 
-    // try expr.print(stdout);
-    // try stdout.writeAll("\n");
+    try expr.print(stdout);
+    try stdout.writeAll("\n");
 
     var args = try Args.init(allocator);
     if (args.argc < 2) {
