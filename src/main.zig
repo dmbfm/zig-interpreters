@@ -7,6 +7,73 @@ const ArrayList = std.ArrayList;
 const stdout = std.io.getStdOut().writer();
 const stdin = std.io.getStdIn().reader();
 
+const ExprKind = union(enum) {
+    Unary: *Expr,
+    Binary: BinaryExpr,
+    Literal: Token,
+    Grouping: *Expr,
+};
+
+const UnaryExpr = struct {
+    expr: *Expr,
+    op: Token,
+};
+
+const BinaryExpr = struct {
+    left: *Expr,
+    right: *Expr,
+    op: Token,
+};
+
+const Expr = struct {
+    kind: ExprKind,
+
+    pub fn unary(expr: *Expr, op: Token) Expr {
+        return .{
+            .kind = .{ .Unary = .{ .expr = expr, .op = op } },
+        };
+    }
+
+    pub fn binary(left: *Expr, op: Token, right: *Expr) Expr {
+        return .{
+            .kind = .{ .Binary = .{ .left = left, .right = right, .op = op } },
+        };
+    }
+
+    pub fn literal(t: Token) Expr {
+        return .{ .kind = .{ .Literal = t } };
+    }
+
+    pub fn grouping(expr: *Expr) Expr {
+        return .{ .kind = .{ .Grouping = expr } };
+    }
+
+    pub fn print(self: Expr, wr: anytype) anyerror!void {
+        switch (self.kind) {
+            .Unary => |expr| {
+                try wr.writeAll("Uniary[");
+                try expr.print(wr);
+                try wr.writeAll("]");
+            },
+            .Literal => |token| {
+                try token.print(wr);
+            },
+            .Binary => |binExpr| {
+                try wr.print("({s} ", .{binExpr.op.string});
+                try binExpr.left.print(wr);
+                try wr.writeAll(" ");
+                try binExpr.right.print(wr);
+                try wr.writeAll(")");
+            },
+            .Grouping => |expr| {
+                try wr.writeAll("( ");
+                try expr.print(wr);
+                try wr.writeAll(" )");
+            },
+        }
+    }
+};
+
 const TokenError = enum {
     StringNotClosed,
     NumberError,
@@ -73,6 +140,37 @@ const Token = struct {
     string: []const u8,
     line: usize,
     kind: TokenKind,
+
+    pub fn init(kind: TokenKind, string: []const u8) Token {
+        return .{
+            .kind = kind,
+            .string = string,
+            .line = 0,
+        };
+    }
+
+    pub fn initWithLine(kind: TokenKind, string: []const u8, line: usize) Token {
+        return .{
+            .kind = kind,
+            .string = string,
+            .line = line,
+        };
+    }
+
+    pub fn number(num: f64) Token {
+        return .{ .string = "", .line = 0, .kind = .{ .Number = num } };
+    }
+
+    pub fn print(self: Token, wr: anytype) anyerror!void {
+        switch (self.kind) {
+            .Number => |num| {
+                try wr.print("{}", .{num});
+            },
+            else => {
+                try wr.print("{s}", .{self.string});
+            },
+        }
+    }
 };
 
 const Scanner = struct {
@@ -309,6 +407,15 @@ pub fn main() !void {
     const allocator = &arena.allocator;
 
     var interpreter = Intepreter.init(allocator);
+
+    // var expr = Expr.binary(
+    //     &Expr.literal(Token.number(2.0)),
+    //     Token.init(.Star, "*"),
+    //     &Expr.binary(&Expr.literal(Token.number(5.23)), Token.init(.Plus, "+"), &Expr.literal(Token.number(2.34))),
+    // );
+
+    // try expr.print(stdout);
+    // try stdout.writeAll("\n");
 
     var args = try Args.init(allocator);
     if (args.argc < 2) {

@@ -1,5 +1,11 @@
 const std = @import("std");
 
+fn addTestToStep(b: *std.build.Builder, step: *std.build.Step, src: []const u8) void {
+    const t = b.addTest(src);
+    t.setBuildMode(.Debug);
+    step.dependOn(&t.step);
+}
+
 pub fn build(b: *std.build.Builder) void {
     // Standard target options allows the person running `zig build` to choose
     // what target to build for. Here we do not override the defaults, which
@@ -27,8 +33,5 @@ pub fn build(b: *std.build.Builder) void {
     run_step.dependOn(&run_cmd.step);
 
     const test_step = b.step("test", "Run tests");
-
-    const main_test = b.addTest("src/main.zig");
-    main_test.setBuildMode(.Debug);
-    test_step.dependOn(&main_test.step);
+    addTestToStep(b, test_step, "src/main.zig");
 }
