@@ -1,5 +1,3 @@
-./zig-cache/*
-./zig-out/*
-/zig-cache/
-/zig-out/
-/src/zig-cache/
+zig-*
+debug
+release
