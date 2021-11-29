@@ -121,7 +121,7 @@ const Expr = struct {
         try wr.writeAll(")");
     }
 
-    pub fn DEBUG_evalNumber(self: Expr) anyerror!f64 {
+    pub fn eval(self: Expr) anyerror!f64 {
         return switch (self.kind) {
             .add => |v| (v.left.eval() catch |e| return e) + (v.right.eval() catch |e| return e),
             .sub => |v| (v.left.eval() catch |e| return e) - (v.right.eval() catch |e| return e),
@@ -526,7 +526,8 @@ const Parser = struct {
         return null;
     }
 
-    pub fn expect(self: *Parser, kind: TokenKind) !Token {
+    // TODO: this should return an error
+    pub fn expect(self: *Parser, kind: TokenKind) Token {
         if (self.nextToken()) |token| {
             if (@enumToInt(token.kind) != @enumToInt(kind)) {
                 unreachable;
@@ -654,7 +655,7 @@ const Parser = struct {
                 .Nil => Expr.nil(),
                 .LeftParen => blk: {
                     var exp = try self.parse();
-                    _ = try self.expect(.RightParen);
+                    _ = self.expect(.RightParen);
                     break :blk exp.*;
                 },
                 // .String => Expr.
@@ -686,7 +687,7 @@ const Intepreter = struct {
         try e.print(stdout);
         try stdout.writeAll("\n");
 
-        if (e.DEBUG_evalNumber()) |value| {
+        if (e.eval()) |value| {
             try stdout.print("{}\n", .{value});
         } else |_| {
             try stdout.writeAll("Failed to evaluate expression.\n");
