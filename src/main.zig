@@ -8,76 +8,181 @@ const stdout = std.io.getStdOut().writer();
 const stdin = std.io.getStdIn().reader();
 
 const ExprKind = union(enum) {
-    Unary: *Expr,
-    Binary: BinaryExpr,
-    Literal: Token,
-    Grouping: *Expr,
-};
+    add: BinaryExpr,
+    sub: BinaryExpr,
+    mul: BinaryExpr,
+    div: BinaryExpr,
 
-const UnaryExpr = struct {
-    expr: *Expr,
-    op: Token,
+    eq: BinaryExpr,
+    neq: BinaryExpr,
+
+    lt: BinaryExpr,
+    st: BinaryExpr,
+    let: BinaryExpr,
+    set: BinaryExpr,
+
+    not: *Expr,
+    minus: *Expr,
+    unknown: void,
+    err: void,
+
+    num: f64,
+    boolean: bool,
+    nil: void,
 };
 
 const BinaryExpr = struct {
     left: *Expr,
     right: *Expr,
-    op: Token,
 };
 
 const Expr = struct {
     kind: ExprKind,
 
-    pub fn unary(expr: *Expr, op: Token) Expr {
-        return .{
-            .kind = .{ .Unary = .{ .expr = expr, .op = op } },
+    pub fn init(kind: ExprKind) Expr {
+        return .{ .kind = kind };
+    }
+
+    pub fn add(left: *Expr, right: *Expr) Expr {
+        return .{ .kind = .{ .add = .{ .left = left, .right = right } } };
+    }
+
+    pub fn sub(left: *Expr, right: *Expr) Expr {
+        return .{ .kind = .{ .sub = .{ .left = left, .right = right } } };
+    }
+
+    pub fn mul(left: *Expr, right: *Expr) Expr {
+        return .{ .kind = .{ .mul = .{ .left = left, .right = right } } };
+    }
+
+    pub fn div(left: *Expr, right: *Expr) Expr {
+        return .{ .kind = .{ .div = .{ .left = left, .right = right } } };
+    }
+
+    pub fn eq(left: *Expr, right: *Expr) Expr {
+        return .{ .kind = .{ .eq = .{ .left = left, .right = right } } };
+    }
+
+    pub fn neq(left: *Expr, right: *Expr) Expr {
+        return .{ .kind = .{ .neq = .{ .left = left, .right = right } } };
+    }
+
+    pub fn lt(left: *Expr, right: *Expr) Expr {
+        return .{ .kind = .{ .lt = .{ .left = left, .right = right } } };
+    }
+
+    pub fn let(left: *Expr, right: *Expr) Expr {
+        return .{ .kind = .{ .let = .{ .left = left, .right = right } } };
+    }
+
+    pub fn st(left: *Expr, right: *Expr) Expr {
+        return .{ .kind = .{ .st = .{ .left = left, .right = right } } };
+    }
+
+    pub fn set(left: *Expr, right: *Expr) Expr {
+        return .{ .kind = .{ .set = .{ .left = left, .right = right } } };
+    }
+
+    pub fn not(e: *Expr) Expr {
+        return .{ .kind = .{ .not = e } };
+    }
+
+    pub fn minus(e: *Expr) Expr {
+        return .{ .kind = .{ .minus = e } };
+    }
+
+    pub fn num(v: f64) Expr {
+        return .{ .kind = .{ .num = v } };
+    }
+
+    pub fn boolean(v: bool) Expr {
+        return .{ .kind = .{ .boolean = v } };
+    }
+
+    pub fn nil() Expr {
+        return .{ .kind = .nil };
+    }
+
+    pub fn err() Expr {
+        return .{ .kind = .err };
+    }
+
+    fn printBinary(op: []const u8, b: *const BinaryExpr, wr: anytype) !void {
+        try wr.print("({s} ", .{op});
+        try b.left.print(wr);
+        try wr.writeAll(" ");
+        try b.right.print(wr);
+        try wr.writeAll(")");
+    }
+
+    fn printUnary(op: []const u8, e: *const Expr, wr: anytype) !void {
+        try wr.print("({s} ", .{op});
+        try e.print(wr);
+        try wr.writeAll(")");
+    }
+
+    pub fn DEBUG_evalNumber(self: Expr) anyerror!f64 {
+        return switch (self.kind) {
+            .add => |v| (v.left.eval() catch |e| return e) + (v.right.eval() catch |e| return e),
+            .sub => |v| (v.left.eval() catch |e| return e) - (v.right.eval() catch |e| return e),
+            .mul => |v| (v.left.eval() catch |e| return e) * (v.right.eval() catch |e| return e),
+            .div => |v| (v.left.eval() catch |e| return e) / (v.right.eval() catch |e| return e),
+            .num => |v| v,
+            else => error.NotImplemented,
         };
-    }
-
-    pub fn binary(left: *Expr, op: Token, right: *Expr) Expr {
-        return .{
-            .kind = .{ .Binary = .{ .left = left, .right = right, .op = op } },
-        };
-    }
-
-    pub fn literal(t: Token) Expr {
-        return .{ .kind = .{ .Literal = t } };
-    }
-
-    pub fn literalNumber(num: f64) Expr {
-        return .{ .kind = .{ .Literal = Token.number(num) } };
-    }
-
-    pub fn literalString(str: []const u8) Expr {
-        return .{ .kind = .{ .Literal = Token.init(.{ .String = str }, str) } };
-    }
-
-    pub fn grouping(expr: *Expr) Expr {
-        return .{ .kind = .{ .Grouping = expr } };
     }
 
     pub fn print(self: Expr, wr: anytype) anyerror!void {
         switch (self.kind) {
-            .Unary => |expr| {
-                try wr.writeAll("Uniary[");
-                try expr.print(wr);
-                try wr.writeAll("]");
+            .add => |*v| {
+                try printBinary("+", v, wr);
             },
-            .Literal => |token| {
-                try token.print(wr);
+            .sub => |*v| {
+                try printBinary("-", v, wr);
             },
-            .Binary => |binExpr| {
-                try wr.print("({s} ", .{binExpr.op.string});
-                try binExpr.left.print(wr);
-                try wr.writeAll(" ");
-                try binExpr.right.print(wr);
-                try wr.writeAll(")");
+            .mul => |*v| {
+                try printBinary("*", v, wr);
             },
-            .Grouping => |expr| {
-                try wr.writeAll("( ");
-                try expr.print(wr);
-                try wr.writeAll(" )");
+            .div => |*v| {
+                try printBinary("/", v, wr);
             },
+            .eq => |*v| {
+                try printBinary("==", v, wr);
+            },
+            .neq => |*v| {
+                try printBinary("!=", v, wr);
+            },
+            .lt => |*v| {
+                try printBinary(">", v, wr);
+            },
+            .st => |*v| {
+                try printBinary("<", v, wr);
+            },
+            .let => |*v| {
+                try printBinary(">=", v, wr);
+            },
+            .set => |*v| {
+                try printBinary("<=", v, wr);
+            },
+            .not => |e| {
+                try printUnary("!", e, wr);
+            },
+            .minus => |e| {
+                try printUnary("-", e, wr);
+            },
+            .num => |v| {
+                try wr.print("{}", .{v});
+            },
+            .err => {
+                try wr.print("Error", .{});
+            },
+            .boolean => |v| {
+                try wr.writeAll(if (v) "true" else "false");
+            },
+            .nil => {
+                try wr.writeAll("nil");
+            },
+            else => {},
         }
     }
 };
@@ -364,6 +469,203 @@ const Scanner = struct {
     }
 };
 
+const Parser = struct {
+    tokens: []Token,
+    cur: usize = 0,
+    arena: std.heap.ArenaAllocator,
+    allocator: *Allocator,
+
+    pub fn init(tokens: []Token, allocator: *Allocator) Parser {
+        return .{
+            .tokens = tokens,
+            .allocator = allocator,
+            .arena = std.heap.ArenaAllocator.init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *Parser) void {
+        self.arena.deinit();
+    }
+
+    pub fn createExpr(self: *Parser) Allocator.Error!*Expr {
+        return self.arena.allocator.create(Expr);
+    }
+
+    pub fn createExprWithKind(self: *Parser, kind: ExprKind) !*Expr {
+        var expr = try self.createExpr();
+        expr.kind = kind;
+
+        return expr;
+    }
+
+    pub fn nextToken(self: *Parser) ?Token {
+        if (self.cur >= self.tokens.len) {
+            return null;
+        }
+
+        defer self.cur += 1;
+        return self.tokens[self.cur];
+    }
+
+    pub fn match(self: *Parser, kind: TokenKind) ?Token {
+        if (self.cur >= self.tokens.len or @enumToInt(self.tokens[self.cur].kind) != @enumToInt(kind)) {
+            return null;
+        }
+
+        defer self.cur += 1;
+        return self.tokens[self.cur];
+    }
+
+    pub fn matchOneOf(self: *Parser, kinds: []const TokenKind) ?Token {
+        for (kinds) |kind| {
+            if (self.match(kind)) |token| {
+                return token;
+            }
+        }
+
+        return null;
+    }
+
+    pub fn expect(self: *Parser, kind: TokenKind) !Token {
+        if (self.nextToken()) |token| {
+            if (@enumToInt(token.kind) != @enumToInt(kind)) {
+                unreachable;
+            } else {
+                return token;
+            }
+        } else {
+            unreachable;
+        }
+    }
+
+    pub fn parse(self: *Parser) !*Expr {
+        if (self.tokens.len == 0) {
+            var e = try self.createExprWithKind(.err);
+            return e;
+        }
+
+        return self.parseEquality();
+    }
+
+    pub fn parseEquality(self: *Parser) !*Expr {
+        var current = try self.parseComp();
+
+        while (self.matchOneOf(&[_]TokenKind{ .EqualEqual, .BangEqual })) |token| {
+            var right = try self.parseComp();
+            var previous = current;
+            current = try self.createExpr();
+            current.* = switch (token.kind) {
+                .EqualEqual => Expr.eq(previous, right),
+                .BangEqual => Expr.neq(previous, right),
+                else => unreachable,
+            };
+        }
+
+        return current;
+    }
+
+    pub fn parseComp(self: *Parser) !*Expr {
+        var current = try self.parseTerm();
+
+        var ops = [_]TokenKind{ .Less, .LessEqual, .Greater, .GreaterEqual };
+
+        while (self.matchOneOf(&ops)) |token| {
+            var right = try self.parseTerm();
+
+            var previous = current;
+
+            current = try self.createExpr();
+            current.* = switch (token.kind) {
+                .Less => Expr.st(previous, right),
+                .LessEqual => Expr.set(previous, right),
+                .Greater => Expr.lt(previous, right),
+                .GreaterEqual => Expr.let(previous, right),
+                else => unreachable,
+            };
+        }
+
+        return current;
+    }
+
+    pub fn parseTerm(self: *Parser) !*Expr {
+        var current = try self.parseFact();
+
+        var ops = [_]TokenKind{ .Plus, .Minus };
+
+        while (self.matchOneOf(&ops)) |token| {
+            var right = try self.parseFact();
+            var previous = current;
+            current = try self.createExpr();
+            current.* = switch (token.kind) {
+                .Plus => Expr.add(previous, right),
+                .Minus => Expr.sub(previous, right),
+                else => unreachable,
+            };
+        }
+
+        return current;
+    }
+
+    pub fn parseFact(self: *Parser) !*Expr {
+        var current = try self.parseUnary();
+
+        var ops = [_]TokenKind{ .Star, .Slash };
+
+        while (self.matchOneOf(&ops)) |token| {
+            var right = try self.parseUnary();
+            var previous = current;
+            current = try self.createExpr();
+            current.* = switch (token.kind) {
+                .Star => Expr.mul(previous, right),
+                .Slash => Expr.div(previous, right),
+                else => unreachable,
+            };
+        }
+
+        return current;
+    }
+
+    pub fn parseUnary(self: *Parser) anyerror!*Expr {
+        var ops = [_]TokenKind{ .Bang, .Minus };
+
+        if (self.matchOneOf(&ops)) |token| {
+            var e = try self.createExpr();
+            e.* = switch (token.kind) {
+                .Bang => Expr.not(try self.parseUnary()),
+                .Minus => Expr.minus(try self.parseUnary()),
+                else => unreachable,
+            };
+
+            return e;
+        }
+
+        return try self.parsePrimary();
+    }
+
+    // Number | string | "true" | "false" | "nil"
+    pub fn parsePrimary(self: *Parser) !*Expr {
+        var e = try self.createExpr();
+
+        if (self.nextToken()) |token| {
+            e.* = switch (token.kind) {
+                .Number => |v| Expr.num(v),
+                .True => Expr.boolean(true),
+                .False => Expr.boolean(false),
+                .Nil => Expr.nil(),
+                .LeftParen => blk: {
+                    var exp = try self.parse();
+                    _ = try self.expect(.RightParen);
+                    break :blk exp.*;
+                },
+                // .String => Expr.
+                else => Expr.err(),
+            };
+        }
+
+        return e;
+    }
+};
+
 const Intepreter = struct {
     allocator: *Allocator,
 
@@ -373,21 +675,26 @@ const Intepreter = struct {
         };
     }
 
-    pub fn initKeywords(self: *Intepreter) !void {
-        var keywords = std.StringArrayHashMap(TokenKind).init(self.allocator);
-
-        try keywords.put("var", .Var);
-        try keywords.put("fun", .Fun);
-    }
-
     pub fn run(self: *Intepreter, source: []const u8) !void {
         var scanner = Scanner.init(source);
         var tokens = try scanner.scan(self.allocator);
+        var parser = Parser.init(tokens, self.allocator);
+        defer parser.deinit();
         defer self.allocator.free(tokens);
 
-        for (tokens) |token| {
-            try stdout.print("'{s}' \t {}\n", .{ token.string, token });
+        var e = try parser.parse();
+        try e.print(stdout);
+        try stdout.writeAll("\n");
+
+        if (e.DEBUG_evalNumber()) |value| {
+            try stdout.print("{}\n", .{value});
+        } else |_| {
+            try stdout.writeAll("Failed to evaluate expression.\n");
         }
+
+        // for (tokens) |token| {
+        //     try stdout.print("'{s}' \t {}\n", .{ token.string, token });
+        // }
     }
 
     pub fn runFile(self: *Intepreter, filename: []const u8) !void {
@@ -418,15 +725,8 @@ pub fn main() !void {
     const allocator = &arena.allocator;
 
     var interpreter = Intepreter.init(allocator);
-
-    var expr = Expr.binary(&Expr.literalNumber(2.0), Token.init(.Star, "*"), &Expr.binary(&Expr.literalNumber(32.34), Token.init(.Plus, "+"),
-    // &Expr.literalNumber(2.34),
-    &Expr.literalString("hello!")));
-
-    try expr.print(stdout);
-    try stdout.writeAll("\n");
-
     var args = try Args.init(allocator);
+
     if (args.argc < 2) {
         try interpreter.runRepl();
     } else {
