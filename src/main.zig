@@ -527,15 +527,15 @@ const Parser = struct {
     }
 
     // TODO: this should return an error
-    pub fn expect(self: *Parser, kind: TokenKind) Token {
+    pub fn expect(self: *Parser, kind: TokenKind) !Token {
         if (self.nextToken()) |token| {
             if (@enumToInt(token.kind) != @enumToInt(kind)) {
-                unreachable;
+                return error.WrongTokenKind;
             } else {
                 return token;
             }
         } else {
-            unreachable;
+            return error.NoToken;
         }
     }
 
@@ -655,7 +655,7 @@ const Parser = struct {
                 .Nil => Expr.nil(),
                 .LeftParen => blk: {
                     var exp = try self.parse();
-                    _ = self.expect(.RightParen);
+                    _ = self.expect(.RightParen) catch return error.ParenthesisNotClosed;
                     break :blk exp.*;
                 },
                 // .String => Expr.
@@ -714,7 +714,9 @@ const Intepreter = struct {
                 if (std.mem.eql(u8, line, "quit")) {
                     break;
                 }
-                try self.run(line);
+                self.run(line) catch |e| {
+                    try stdout.print("Error: {}\n", .{e});
+                };
             }
         }
     }
