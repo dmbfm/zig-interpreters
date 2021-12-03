@@ -1,6 +1,12 @@
 const std = @import("std");
 const zdf = @import("zdf");
 
+// Grammar:
+//
+//
+// program ::=
+//
+
 const Args = zdf.Args;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -29,11 +35,43 @@ const ExprKind = union(enum) {
     num: f64,
     boolean: bool,
     nil: void,
+    string: []const u8,
 };
 
 const BinaryExpr = struct {
     left: *Expr,
     right: *Expr,
+};
+
+const RuntimeError = error{
+    TypeError,
+    NotImplemented,
+};
+
+const Result = union(enum) {
+    num: f64,
+    boolean: bool,
+    string: []const u8,
+
+    pub fn num(val: f64) Result {
+        return .{ .num = val };
+    }
+
+    pub fn boolean(val: bool) Result {
+        return .{ .boolean = val };
+    }
+
+    pub fn string(val: []const u8) Result {
+        return .{ .string = val };
+    }
+
+    pub fn expect(self: *Result, kind: std.meta.Tag(Result)) RuntimeError!*Result {
+        if (@enumToInt(self.*) != @enumToInt(kind)) {
+            return RuntimeError.TypeError;
+        }
+
+        return self;
+    }
 };
 
 const Expr = struct {
@@ -107,6 +145,10 @@ const Expr = struct {
         return .{ .kind = .err };
     }
 
+    pub fn string(val: []const u8) Expr {
+        return .{ .kind = .{ .string = val } };
+    }
+
     fn printBinary(op: []const u8, b: *const BinaryExpr, wr: anytype) !void {
         try wr.print("({s} ", .{op});
         try b.left.print(wr);
@@ -121,14 +163,35 @@ const Expr = struct {
         try wr.writeAll(")");
     }
 
-    pub fn eval(self: Expr) anyerror!f64 {
+    pub fn evalAdd(binExpr: BinaryExpr) RuntimeError!Result {
+        var left = try binExpr.left.eval();
+        var right = try binExpr.right.eval();
+
+        if (@enumToInt(left) != @enumToInt(right)) {
+            return RuntimeError.TypeError;
+        }
+
+        // TODO: Figure out memory managment for string concatenation...
+        return switch (left) {
+            .num => |v| Result.num(v + right.num),
+            // .string => |v| Result.string(),
+            else => RuntimeError.TypeError,
+        };
+    }
+
+    // TODO: Maybe eval should live in the interpreter instead of here. Yeah,  pretty sure it should, because of state and memory.
+    pub fn eval(self: Expr) RuntimeError!Result {
         return switch (self.kind) {
-            .add => |v| (v.left.eval() catch |e| return e) + (v.right.eval() catch |e| return e),
-            .sub => |v| (v.left.eval() catch |e| return e) - (v.right.eval() catch |e| return e),
-            .mul => |v| (v.left.eval() catch |e| return e) * (v.right.eval() catch |e| return e),
-            .div => |v| (v.left.eval() catch |e| return e) / (v.right.eval() catch |e| return e),
-            .num => |v| v,
-            else => error.NotImplemented,
+            .add => |v| try evalAdd(v),
+            .sub => |v| Result.num((try (try v.left.eval()).expect(.num)).num - (try (try v.right.eval()).expect(.num)).num),
+            .mul => |v| Result.num((try (try v.left.eval()).expect(.num)).num * (try (try v.right.eval()).expect(.num)).num),
+            .div => |v| Result.num((try (try v.left.eval()).expect(.num)).num / (try (try v.right.eval()).expect(.num)).num),
+            .minus => |v| Result.num(-(try (try v.eval()).expect(.num)).num),
+            .num => |v| Result.num(v),
+            .not => |v| Result.boolean(!(try (try v.eval()).expect(.boolean)).boolean),
+            .boolean => |v| Result.boolean(v),
+            .string => |v| Result.string(v),
+            else => RuntimeError.NotImplemented,
         };
     }
 
@@ -526,7 +589,6 @@ const Parser = struct {
         return null;
     }
 
-    // TODO: this should return an error
     pub fn expect(self: *Parser, kind: TokenKind) !Token {
         if (self.nextToken()) |token| {
             if (@enumToInt(token.kind) != @enumToInt(kind)) {
@@ -658,6 +720,7 @@ const Parser = struct {
                     _ = self.expect(.RightParen) catch return error.ParenthesisNotClosed;
                     break :blk exp.*;
                 },
+                .String => |v| Expr.string(v),
                 // .String => Expr.
                 else => Expr.err(),
             };
@@ -683,19 +746,17 @@ const Intepreter = struct {
         defer parser.deinit();
         defer self.allocator.free(tokens);
 
+        std.log.info("{a}", .{tokens});
+
         var e = try parser.parse();
         try e.print(stdout);
         try stdout.writeAll("\n");
 
         if (e.eval()) |value| {
             try stdout.print("{}\n", .{value});
-        } else |_| {
-            try stdout.writeAll("Failed to evaluate expression.\n");
+        } else |err| {
+            try stdout.print("RuntimeError: {}\n", .{err});
         }
-
-        // for (tokens) |token| {
-        //     try stdout.print("'{s}' \t {}\n", .{ token.string, token });
-        // }
     }
 
     pub fn runFile(self: *Intepreter, filename: []const u8) !void {
