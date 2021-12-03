@@ -1,21 +1,34 @@
 const std = @import("std");
 const zdf = @import("zdf");
 
+const Args = zdf.Args;
+const Allocator = std.mem.Allocator;
+const ArrayList = std.ArrayList;
+const stdout = std.io.getStdOut().writer();
+const stdin = std.io.getStdIn().reader();
+
 pub const log_level: std.log.Level = .info;
 // pub const log_level: std.log.Level = .warn;
 
 // Grammar:
 //
 //
-// program ::=
+// program              ::= statement* EOF ;
+// statement            ::= expression_statement | print_statement ;
+// expression_statement ::= expression ";"
+// print_statement      ::= "print" expression ";"
 //
+// expression           ::= equality ;
+// equality             ::= comparison (("==" | "!=") comparison)* ;
+// comparison           ::= term (("<" | ">" | "<=" | ">=") term)* ;
+// term                 ::= factor (("+" | "-") factor)* ;
+// factor               ::= unary (("*" | "\") unary)* ;
+// unary                ::= ("!", "-") unary | primary ;
+// primary              ::= number | string | boolean | "nil" | "(" expression ")" ;
+// number               ::= {insert some number regex here}
+// string               ::= """ [character]* """ ;
+// boolean              ::= "true" | "false" ;
 //
-
-const Args = zdf.Args;
-const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
-const stdout = std.io.getStdOut().writer();
-const stdin = std.io.getStdIn().reader();
 
 const ExprKind = union(enum) {
     add: BinaryExpr,
@@ -91,6 +104,11 @@ const Result = union(enum) {
             },
         }
     }
+};
+
+const Stmt = union(enum) {
+    PrintStmt: *Expr,
+    ExprStmt: *Expr,
 };
 
 const Expr = struct {
@@ -354,7 +372,7 @@ const Scanner = struct {
         };
     }
 
-    pub fn scan(self: *Scanner, allocator: *Allocator) ![]Token {
+    pub fn scan(self: *Scanner, allocator: Allocator) ![]Token {
         var tokens = std.ArrayList(Token).init(allocator);
         defer tokens.deinit();
 
@@ -526,9 +544,9 @@ const Parser = struct {
     tokens: []Token,
     cur: usize = 0,
     arena: std.heap.ArenaAllocator,
-    allocator: *Allocator,
+    allocator: Allocator,
 
-    pub fn init(tokens: []Token, allocator: *Allocator) Parser {
+    pub fn init(tokens: []Token, allocator: Allocator) Parser {
         return .{
             .tokens = tokens,
             .allocator = allocator,
@@ -541,7 +559,7 @@ const Parser = struct {
     }
 
     pub fn createExpr(self: *Parser) Allocator.Error!*Expr {
-        return self.arena.allocator.create(Expr);
+        return self.arena.allocator().create(Expr);
     }
 
     pub fn createExprWithKind(self: *Parser, kind: ExprKind) !*Expr {
@@ -591,7 +609,7 @@ const Parser = struct {
         }
     }
 
-    pub fn parse(self: *Parser) !*Expr {
+    pub fn parseExpr(self: *Parser) !*Expr {
         if (self.tokens.len == 0) {
             var e = try self.createExprWithKind(.err);
             return e;
@@ -706,7 +724,7 @@ const Parser = struct {
                 .False => Expr.boolean(false),
                 .Nil => Expr.nil(),
                 .LeftParen => blk: {
-                    var exp = try self.parse();
+                    var exp = try self.parseExpr();
                     _ = self.expect(.RightParen) catch return error.ParenthesisNotClosed;
                     break :blk exp.*;
                 },
@@ -722,7 +740,7 @@ const Parser = struct {
 const Intepreter = struct {
     arena: std.heap.ArenaAllocator,
 
-    pub fn init(allocator: *Allocator) Intepreter {
+    pub fn init(allocator: Allocator) Intepreter {
         return .{
             .arena = std.heap.ArenaAllocator.init(allocator),
         };
@@ -733,7 +751,7 @@ const Intepreter = struct {
     }
 
     pub fn stringConcat(self: *Intepreter, s1: []const u8, s2: []const u8) ![]const u8 {
-        var newString = self.arena.allocator.alloc(u8, s1.len + s2.len) catch return RuntimeError.OutOfMemory;
+        var newString = self.arena.allocator().alloc(u8, s1.len + s2.len) catch return RuntimeError.OutOfMemory;
 
         std.mem.copy(u8, newString, s1);
         std.mem.copy(u8, newString[s1.len..], s2);
@@ -786,21 +804,20 @@ const Intepreter = struct {
         };
     }
     pub fn eval(self: *Intepreter, expr: *Expr) RuntimeError!Result {
-        _ = self;
         return switch (expr.kind) {
             .add => |v| try self.evalAdd(v),
             .sub => |v| Result.num((try (try self.eval(v.left)).expect(.num)).num - (try (try self.eval(v.right)).expect(.num)).num),
             .mul => |v| Result.num((try (try self.eval(v.left)).expect(.num)).num * (try (try self.eval(v.right)).expect(.num)).num),
             .div => |v| Result.num((try (try self.eval(v.left)).expect(.num)).num / (try (try self.eval(v.right)).expect(.num)).num),
-            .minus => |v| Result.num(-(try (try self.eval(v)).expect(.num)).num),
-            .num => |v| Result.num(v),
-            .not => |v| Result.boolean(!(try (try self.eval(v)).expect(.boolean)).boolean),
             .eq => |v| try self.evalEq(v),
             .neq => |v| try self.evalNeq(v),
             .st => |v| Result.boolean((try (try self.eval(v.left)).expect(.num)).num < (try (try self.eval(v.right)).expect(.num)).num),
             .set => |v| Result.boolean((try (try self.eval(v.left)).expect(.num)).num <= (try (try self.eval(v.right)).expect(.num)).num),
             .lt => |v| Result.boolean((try (try self.eval(v.left)).expect(.num)).num > (try (try self.eval(v.right)).expect(.num)).num),
             .let => |v| Result.boolean((try (try self.eval(v.left)).expect(.num)).num >= (try (try self.eval(v.right)).expect(.num)).num),
+            .minus => |v| Result.num(-(try (try self.eval(v)).expect(.num)).num),
+            .not => |v| Result.boolean(!(try (try self.eval(v)).expect(.boolean)).boolean),
+            .num => |v| Result.num(v),
             .boolean => |v| Result.boolean(v),
             .string => |v| Result.string(v),
             else => RuntimeError.NotImplemented,
@@ -809,14 +826,15 @@ const Intepreter = struct {
 
     pub fn run(self: *Intepreter, source: []const u8) !void {
         var scanner = Scanner.init(source);
-        var tokens = try scanner.scan(&self.arena.allocator);
-        var parser = Parser.init(tokens, &self.arena.allocator);
+        var allocator = self.arena.allocator();
+        var tokens = try scanner.scan(allocator);
+        var parser = Parser.init(tokens, allocator);
         defer parser.deinit();
-        defer self.arena.allocator.free(tokens);
+        defer allocator.free(tokens);
 
         std.log.info("{a}", .{tokens});
 
-        var e = try parser.parse();
+        var e = try parser.parseExpr();
         try e.print(stdout);
         try stdout.writeAll("\n");
 
@@ -830,7 +848,7 @@ const Intepreter = struct {
 
     pub fn runFile(self: *Intepreter, filename: []const u8) !void {
         var file = try std.fs.cwd().openFile(filename, .{});
-        var contents = try file.readToEndAlloc(&self.arena.allocator, 1073741824);
+        var contents = try file.readToEndAlloc(self.arena.allocator(), 1073741824);
 
         return self.run(contents);
     }
@@ -855,7 +873,7 @@ const Intepreter = struct {
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    const allocator = &arena.allocator;
+    const allocator = arena.allocator();
 
     var interpreter = Intepreter.init(allocator);
     var args = try Args.init(allocator);
