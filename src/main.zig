@@ -947,7 +947,7 @@ const Intepreter = struct {
             .not => |v| Result.boolean(!(try (try self.evalExpr(v)).expect(.boolean)).boolean),
             .num => |v| Result.num(v),
             .boolean => |v| Result.boolean(v),
-            .string => |v| Result.string(v),
+            .string => |v| Result.string(self.allocator.dupe(u8, v) catch return RuntimeError.OutOfMemory),
             .identifier => |name| if (self.globalVars.get(name)) |v| v else RuntimeError.VariableNotFound,
             else => RuntimeError.NotImplemented,
         };
