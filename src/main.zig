@@ -543,23 +543,19 @@ const Scanner = struct {
 const Parser = struct {
     tokens: []Token,
     cur: usize = 0,
-    arena: std.heap.ArenaAllocator,
+    arena: *std.heap.ArenaAllocator,
     allocator: Allocator,
 
-    pub fn init(tokens: []Token, allocator: Allocator) Parser {
+    pub fn init(tokens: []Token, arena: *std.heap.ArenaAllocator) Parser {
         return .{
             .tokens = tokens,
-            .allocator = allocator,
-            .arena = std.heap.ArenaAllocator.init(allocator),
+            .allocator = arena.allocator(),
+            .arena = arena,
         };
     }
 
-    pub fn deinit(self: *Parser) void {
-        self.arena.deinit();
-    }
-
     pub fn createExpr(self: *Parser) Allocator.Error!*Expr {
-        return self.arena.allocator().create(Expr);
+        return self.allocator.create(Expr);
     }
 
     pub fn createExprWithKind(self: *Parser, kind: ExprKind) !*Expr {
@@ -738,20 +734,18 @@ const Parser = struct {
 };
 
 const Intepreter = struct {
-    arena: std.heap.ArenaAllocator,
+    allocator: Allocator,
+    arena: *std.heap.ArenaAllocator,
 
-    pub fn init(allocator: Allocator) Intepreter {
+    pub fn init(arena: *std.heap.ArenaAllocator) Intepreter {
         return .{
-            .arena = std.heap.ArenaAllocator.init(allocator),
+            .arena = arena,
+            .allocator = arena.allocator(),
         };
     }
 
-    pub fn deinit(self: *Intepreter) void {
-        self.arena.deinit();
-    }
-
     pub fn stringConcat(self: *Intepreter, s1: []const u8, s2: []const u8) ![]const u8 {
-        var newString = self.arena.allocator().alloc(u8, s1.len + s2.len) catch return RuntimeError.OutOfMemory;
+        var newString = self.allocator.alloc(u8, s1.len + s2.len) catch return RuntimeError.OutOfMemory;
 
         std.mem.copy(u8, newString, s1);
         std.mem.copy(u8, newString[s1.len..], s2);
@@ -826,10 +820,9 @@ const Intepreter = struct {
 
     pub fn run(self: *Intepreter, source: []const u8) !void {
         var scanner = Scanner.init(source);
-        var allocator = self.arena.allocator();
+        var allocator = self.allocator;
         var tokens = try scanner.scan(allocator);
-        var parser = Parser.init(tokens, allocator);
-        defer parser.deinit();
+        var parser = Parser.init(tokens, self.arena);
         defer allocator.free(tokens);
 
         std.log.info("{a}", .{tokens});
@@ -848,7 +841,7 @@ const Intepreter = struct {
 
     pub fn runFile(self: *Intepreter, filename: []const u8) !void {
         var file = try std.fs.cwd().openFile(filename, .{});
-        var contents = try file.readToEndAlloc(self.arena.allocator(), 1073741824);
+        var contents = try file.readToEndAlloc(self.allocator, 1073741824);
 
         return self.run(contents);
     }
@@ -875,7 +868,7 @@ pub fn main() !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var interpreter = Intepreter.init(allocator);
+    var interpreter = Intepreter.init(&arena);
     var args = try Args.init(allocator);
 
     if (args.argc < 2) {
