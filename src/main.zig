@@ -1,6 +1,9 @@
 const std = @import("std");
 const zdf = @import("zdf");
 
+pub const log_level: std.log.Level = .info;
+// pub const log_level: std.log.Level = .warn;
+
 // Grammar:
 //
 //
@@ -225,6 +228,9 @@ const Expr = struct {
             },
             .boolean => |v| {
                 try wr.writeAll(if (v) "true" else "false");
+            },
+            .string => |v| {
+                try wr.print("\"{s}\"", .{v});
             },
             .nil => {
                 try wr.writeAll("nil");
@@ -705,7 +711,6 @@ const Parser = struct {
                     break :blk exp.*;
                 },
                 .String => |v| Expr.string(v),
-                // .String => Expr.
                 else => Expr.err(),
             };
         }
@@ -737,7 +742,6 @@ const Intepreter = struct {
     }
 
     pub fn evalAdd(self: *Intepreter, binExpr: BinaryExpr) RuntimeError!Result {
-        _ = self;
         var left = try self.eval(binExpr.left);
         var right = try self.eval(binExpr.right);
 
@@ -748,23 +752,56 @@ const Intepreter = struct {
         return switch (left) {
             .num => |v| Result.num(v + right.num),
             .string => |v| Result.string(try self.stringConcat(v, right.string)),
-            // .string => |v| Result.string(),
             else => RuntimeError.TypeError,
         };
     }
 
+    pub fn evalEq(self: *Intepreter, expr: BinaryExpr) RuntimeError!Result {
+        var left = try self.eval(expr.left);
+        var right = try self.eval(expr.right);
+
+        if (@enumToInt(left) != @enumToInt(right)) {
+            return RuntimeError.TypeError;
+        }
+
+        return switch (left) {
+            .num => |v| Result.boolean(v == right.num),
+            .string => |v| Result.boolean(std.mem.eql(u8, v, right.string)),
+            .boolean => |v| Result.boolean(v == right.boolean),
+        };
+    }
+
+    pub fn evalNeq(self: *Intepreter, expr: BinaryExpr) RuntimeError!Result {
+        var left = try self.eval(expr.left);
+        var right = try self.eval(expr.right);
+
+        if (@enumToInt(left) != @enumToInt(right)) {
+            return RuntimeError.TypeError;
+        }
+
+        return switch (left) {
+            .num => |v| Result.boolean(v != right.num),
+            .string => |v| Result.boolean(!std.mem.eql(u8, v, right.string)),
+            .boolean => |v| Result.boolean(v != right.boolean),
+        };
+    }
     pub fn eval(self: *Intepreter, expr: *Expr) RuntimeError!Result {
         _ = self;
         return switch (expr.kind) {
             .add => |v| try self.evalAdd(v),
-            // .sub => |v| Result.num((try (try v.left.eval()).expect(.num)).num - (try (try v.right.eval()).expect(.num)).num),
             .sub => |v| Result.num((try (try self.eval(v.left)).expect(.num)).num - (try (try self.eval(v.right)).expect(.num)).num),
-            // .mul => |v| Result.num((try (try v.left.eval()).expect(.num)).num * (try (try v.right.eval()).expect(.num)).num),
-            // .div => |v| Result.num((try (try v.left.eval()).expect(.num)).num / (try (try v.right.eval()).expect(.num)).num),
-            // .minus => |v| Result.num(-(try (try v.eval()).expect(.num)).num),
+            .mul => |v| Result.num((try (try self.eval(v.left)).expect(.num)).num * (try (try self.eval(v.right)).expect(.num)).num),
+            .div => |v| Result.num((try (try self.eval(v.left)).expect(.num)).num / (try (try self.eval(v.right)).expect(.num)).num),
+            .minus => |v| Result.num(-(try (try self.eval(v)).expect(.num)).num),
             .num => |v| Result.num(v),
-            // .not => |v| Result.boolean(!(try (try v.eval()).expect(.boolean)).boolean),
-            // .boolean => |v| Result.boolean(v),
+            .not => |v| Result.boolean(!(try (try self.eval(v)).expect(.boolean)).boolean),
+            .eq => |v| try self.evalEq(v),
+            .neq => |v| try self.evalNeq(v),
+            .st => |v| Result.boolean((try (try self.eval(v.left)).expect(.num)).num < (try (try self.eval(v.right)).expect(.num)).num),
+            .set => |v| Result.boolean((try (try self.eval(v.left)).expect(.num)).num <= (try (try self.eval(v.right)).expect(.num)).num),
+            .lt => |v| Result.boolean((try (try self.eval(v.left)).expect(.num)).num > (try (try self.eval(v.right)).expect(.num)).num),
+            .let => |v| Result.boolean((try (try self.eval(v.left)).expect(.num)).num >= (try (try self.eval(v.right)).expect(.num)).num),
+            .boolean => |v| Result.boolean(v),
             .string => |v| Result.string(v),
             else => RuntimeError.NotImplemented,
         };
@@ -784,7 +821,6 @@ const Intepreter = struct {
         try stdout.writeAll("\n");
 
         if (self.eval(e)) |value| {
-            // try stdout.print("{}\n", .{value});
             try value.print(stdout);
             try stdout.writeAll("\n");
         } else |err| {
@@ -803,7 +839,7 @@ const Intepreter = struct {
         var buf: [1024]u8 = undefined;
 
         while (true) {
-            try stdout.writeAll("> ");
+            try stdout.writeAll("\n> ");
             if (try stdin.readUntilDelimiterOrEof(buf[0..], '\n')) |line| {
                 if (std.mem.eql(u8, line, "quit")) {
                     break;
