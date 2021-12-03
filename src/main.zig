@@ -64,6 +64,7 @@ const RuntimeError = error{
     TypeError,
     NotImplemented,
     OutOfMemory,
+    IOError,
 };
 
 const Result = union(enum) {
@@ -106,9 +107,21 @@ const Result = union(enum) {
     }
 };
 
-const Stmt = union(enum) {
+const Program = struct {
+    statements: ArrayList(*Stmt),
+};
+
+// Workaround because of this compiler bug: https://github.com/ziglang/zig/issues/5197
+//
+// Basically if I use Stmt = union(enum) { PrintStmt: *Expr, ...} the compiler crashes when I use ArrayList(*Stmt).
+//
+const StmtKind = union(enum) {
     PrintStmt: *Expr,
     ExprStmt: *Expr,
+};
+
+const Stmt = struct {
+    kind: StmtKind,
 };
 
 const Expr = struct {
@@ -605,6 +618,75 @@ const Parser = struct {
         }
     }
 
+    pub fn peekNextToken(self: *Parser) ?Token {
+        if (self.cur >= self.tokens.len) {
+            return null;
+        }
+
+        return self.tokens[self.cur];
+    }
+
+    pub fn createProgram(self: *Parser) !*Program {
+        return self.allocator.create(Program);
+    }
+
+    pub fn createStmt(self: *Parser) !*Stmt {
+        return self.allocator.create(Stmt);
+    }
+
+    pub fn parseProgram(self: *Parser) !*Program {
+        var program = try self.createProgram();
+
+        program.* = Program{
+            .statements = std.ArrayList(*Stmt).init(self.allocator),
+        };
+
+        while (try self.parseStmt()) |result| {
+            try program.statements.append(result);
+        }
+
+        return program;
+    }
+
+    pub fn parseStmt(self: *Parser) !?*Stmt {
+        _ = self;
+        if (self.peekNextToken()) |token| {
+            _ = token;
+            var result = switch (token.kind) {
+                .Print => self.parsePrintStmt(),
+                else => self.parseExprStmt(),
+            };
+
+            // TODO: For some reason this error is taking precedence over expression parsing errors.
+            //       (e.g., 'prin "hello";' gives a NoSemicolon error.)
+            _ = self.expect(.Semicolon) catch return error.NoSemicolon;
+
+            return result;
+        } else {
+            return null;
+        }
+    }
+
+    pub fn parseExprStmt(self: *Parser) !*Stmt {
+        var expr = try self.parseExpr();
+        var stmt = try self.createStmt();
+        stmt.* = .{ .kind = .{ .ExprStmt = expr } };
+
+        return stmt;
+    }
+
+    pub fn parsePrintStmt(self: *Parser) !*Stmt {
+        if (self.match(.Print)) |_| {
+            var expr = try self.parseExpr();
+            var stmt = try self.createStmt();
+            stmt.* = .{ .kind = .{ .PrintStmt = expr } };
+
+            return stmt;
+        }
+
+        return error.PrintStatementError;
+    }
+
     pub fn parseExpr(self: *Parser) !*Expr {
         if (self.tokens.len == 0) {
             var e = try self.createExprWithKind(.err);
@@ -754,8 +836,8 @@ const Intepreter = struct {
     }
 
     pub fn evalAdd(self: *Intepreter, binExpr: BinaryExpr) RuntimeError!Result {
-        var left = try self.eval(binExpr.left);
-        var right = try self.eval(binExpr.right);
+        var left = try self.evalExpr(binExpr.left);
+        var right = try self.evalExpr(binExpr.right);
 
         if (@enumToInt(left) != @enumToInt(right)) {
             return RuntimeError.TypeError;
@@ -769,8 +851,8 @@ const Intepreter = struct {
     }
 
     pub fn evalEq(self: *Intepreter, expr: BinaryExpr) RuntimeError!Result {
-        var left = try self.eval(expr.left);
-        var right = try self.eval(expr.right);
+        var left = try self.evalExpr(expr.left);
+        var right = try self.evalExpr(expr.right);
 
         if (@enumToInt(left) != @enumToInt(right)) {
             return RuntimeError.TypeError;
@@ -784,8 +866,8 @@ const Intepreter = struct {
     }
 
     pub fn evalNeq(self: *Intepreter, expr: BinaryExpr) RuntimeError!Result {
-        var left = try self.eval(expr.left);
-        var right = try self.eval(expr.right);
+        var left = try self.evalExpr(expr.left);
+        var right = try self.evalExpr(expr.right);
 
         if (@enumToInt(left) != @enumToInt(right)) {
             return RuntimeError.TypeError;
@@ -797,25 +879,46 @@ const Intepreter = struct {
             .boolean => |v| Result.boolean(v != right.boolean),
         };
     }
-    pub fn eval(self: *Intepreter, expr: *Expr) RuntimeError!Result {
+
+    pub fn evalExpr(self: *Intepreter, expr: *Expr) RuntimeError!Result {
         return switch (expr.kind) {
             .add => |v| try self.evalAdd(v),
-            .sub => |v| Result.num((try (try self.eval(v.left)).expect(.num)).num - (try (try self.eval(v.right)).expect(.num)).num),
-            .mul => |v| Result.num((try (try self.eval(v.left)).expect(.num)).num * (try (try self.eval(v.right)).expect(.num)).num),
-            .div => |v| Result.num((try (try self.eval(v.left)).expect(.num)).num / (try (try self.eval(v.right)).expect(.num)).num),
+            .sub => |v| Result.num((try (try self.evalExpr(v.left)).expect(.num)).num - (try (try self.evalExpr(v.right)).expect(.num)).num),
+            .mul => |v| Result.num((try (try self.evalExpr(v.left)).expect(.num)).num * (try (try self.evalExpr(v.right)).expect(.num)).num),
+            .div => |v| Result.num((try (try self.evalExpr(v.left)).expect(.num)).num / (try (try self.evalExpr(v.right)).expect(.num)).num),
             .eq => |v| try self.evalEq(v),
             .neq => |v| try self.evalNeq(v),
-            .st => |v| Result.boolean((try (try self.eval(v.left)).expect(.num)).num < (try (try self.eval(v.right)).expect(.num)).num),
-            .set => |v| Result.boolean((try (try self.eval(v.left)).expect(.num)).num <= (try (try self.eval(v.right)).expect(.num)).num),
-            .lt => |v| Result.boolean((try (try self.eval(v.left)).expect(.num)).num > (try (try self.eval(v.right)).expect(.num)).num),
-            .let => |v| Result.boolean((try (try self.eval(v.left)).expect(.num)).num >= (try (try self.eval(v.right)).expect(.num)).num),
-            .minus => |v| Result.num(-(try (try self.eval(v)).expect(.num)).num),
-            .not => |v| Result.boolean(!(try (try self.eval(v)).expect(.boolean)).boolean),
+            .st => |v| Result.boolean((try (try self.evalExpr(v.left)).expect(.num)).num < (try (try self.evalExpr(v.right)).expect(.num)).num),
+            .set => |v| Result.boolean((try (try self.evalExpr(v.left)).expect(.num)).num <= (try (try self.evalExpr(v.right)).expect(.num)).num),
+            .lt => |v| Result.boolean((try (try self.evalExpr(v.left)).expect(.num)).num > (try (try self.evalExpr(v.right)).expect(.num)).num),
+            .let => |v| Result.boolean((try (try self.evalExpr(v.left)).expect(.num)).num >= (try (try self.evalExpr(v.right)).expect(.num)).num),
+            .minus => |v| Result.num(-(try (try self.evalExpr(v)).expect(.num)).num),
+            .not => |v| Result.boolean(!(try (try self.evalExpr(v)).expect(.boolean)).boolean),
             .num => |v| Result.num(v),
             .boolean => |v| Result.boolean(v),
             .string => |v| Result.string(v),
             else => RuntimeError.NotImplemented,
         };
+    }
+
+    pub fn eval(self: *Intepreter, p: *Program) RuntimeError!void {
+        for (p.statements.items) |statement| {
+            try self.evalStmt(statement);
+        }
+    }
+
+    pub fn evalStmt(self: *Intepreter, s: *Stmt) RuntimeError!void {
+        switch (s.kind) {
+            .PrintStmt => |e| {
+                var result = try self.evalExpr(e);
+                result.print(stdout) catch return RuntimeError.IOError;
+                stdout.writeAll("\n") catch return RuntimeError.IOError;
+            },
+            .ExprStmt => |e| {
+                var result = try self.evalExpr(e);
+                std.log.info("Result: {}", .{result});
+            },
+        }
     }
 
     pub fn run(self: *Intepreter, source: []const u8) !void {
@@ -827,16 +930,28 @@ const Intepreter = struct {
 
         std.log.info("{a}", .{tokens});
 
-        var e = try parser.parseExpr();
-        try e.print(stdout);
-        try stdout.writeAll("\n");
+        // var e = try parser.parseExpr();
+        // try e.print(stdout);
+        // try stdout.writeAll("\n");
 
-        if (self.eval(e)) |value| {
-            try value.print(stdout);
-            try stdout.writeAll("\n");
-        } else |err| {
-            try stdout.print("RuntimeError: {}\n", .{err});
-        }
+        var p = try parser.parseProgram();
+        std.log.info("Program: {a}", .{p.statements.items});
+
+        try self.eval(p);
+
+        // if (self.evalExpr(e)) |value| {
+        //     // try value.print(stdout);
+        //     try stdout.writeAll("\n");
+        // } else |err| {
+        //     try stdout.print("RuntimeError: {}\n", .{err});
+        // }
+
+        // if (self.evalExpr(e)) |value| {
+        //     try value.print(stdout);
+        //     try stdout.writeAll("\n");
+        // } else |err| {
+        //     try stdout.print("RuntimeError: {}\n", .{err});
+        // }
     }
 
     pub fn runFile(self: *Intepreter, filename: []const u8) !void {
