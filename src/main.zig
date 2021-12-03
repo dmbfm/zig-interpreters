@@ -6,6 +6,7 @@ const zdf = @import("zdf");
 //
 // program ::=
 //
+//
 
 const Args = zdf.Args;
 const Allocator = std.mem.Allocator;
@@ -46,6 +47,7 @@ const BinaryExpr = struct {
 const RuntimeError = error{
     TypeError,
     NotImplemented,
+    OutOfMemory,
 };
 
 const Result = union(enum) {
@@ -71,6 +73,20 @@ const Result = union(enum) {
         }
 
         return self;
+    }
+
+    pub fn print(self: Result, wr: anytype) !void {
+        switch (self) {
+            .num => |v| {
+                try wr.print("{}", .{v});
+            },
+            .boolean => |v| {
+                try wr.print("{}", .{v});
+            },
+            .string => |v| {
+                try wr.print("\"{s}\"", .{v});
+            },
+        }
     }
 };
 
@@ -161,38 +177,6 @@ const Expr = struct {
         try wr.print("({s} ", .{op});
         try e.print(wr);
         try wr.writeAll(")");
-    }
-
-    pub fn evalAdd(binExpr: BinaryExpr) RuntimeError!Result {
-        var left = try binExpr.left.eval();
-        var right = try binExpr.right.eval();
-
-        if (@enumToInt(left) != @enumToInt(right)) {
-            return RuntimeError.TypeError;
-        }
-
-        // TODO: Figure out memory managment for string concatenation...
-        return switch (left) {
-            .num => |v| Result.num(v + right.num),
-            // .string => |v| Result.string(),
-            else => RuntimeError.TypeError,
-        };
-    }
-
-    // TODO: Maybe eval should live in the interpreter instead of here. Yeah,  pretty sure it should, because of state and memory.
-    pub fn eval(self: Expr) RuntimeError!Result {
-        return switch (self.kind) {
-            .add => |v| try evalAdd(v),
-            .sub => |v| Result.num((try (try v.left.eval()).expect(.num)).num - (try (try v.right.eval()).expect(.num)).num),
-            .mul => |v| Result.num((try (try v.left.eval()).expect(.num)).num * (try (try v.right.eval()).expect(.num)).num),
-            .div => |v| Result.num((try (try v.left.eval()).expect(.num)).num / (try (try v.right.eval()).expect(.num)).num),
-            .minus => |v| Result.num(-(try (try v.eval()).expect(.num)).num),
-            .num => |v| Result.num(v),
-            .not => |v| Result.boolean(!(try (try v.eval()).expect(.boolean)).boolean),
-            .boolean => |v| Result.boolean(v),
-            .string => |v| Result.string(v),
-            else => RuntimeError.NotImplemented,
-        };
     }
 
     pub fn print(self: Expr, wr: anytype) anyerror!void {
@@ -731,20 +715,67 @@ const Parser = struct {
 };
 
 const Intepreter = struct {
-    allocator: *Allocator,
+    arena: std.heap.ArenaAllocator,
 
     pub fn init(allocator: *Allocator) Intepreter {
         return .{
-            .allocator = allocator,
+            .arena = std.heap.ArenaAllocator.init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *Intepreter) void {
+        self.arena.deinit();
+    }
+
+    pub fn stringConcat(self: *Intepreter, s1: []const u8, s2: []const u8) ![]const u8 {
+        var newString = self.arena.allocator.alloc(u8, s1.len + s2.len) catch return RuntimeError.OutOfMemory;
+
+        std.mem.copy(u8, newString, s1);
+        std.mem.copy(u8, newString[s1.len..], s2);
+
+        return newString;
+    }
+
+    pub fn evalAdd(self: *Intepreter, binExpr: BinaryExpr) RuntimeError!Result {
+        _ = self;
+        var left = try self.eval(binExpr.left);
+        var right = try self.eval(binExpr.right);
+
+        if (@enumToInt(left) != @enumToInt(right)) {
+            return RuntimeError.TypeError;
+        }
+
+        return switch (left) {
+            .num => |v| Result.num(v + right.num),
+            .string => |v| Result.string(try self.stringConcat(v, right.string)),
+            // .string => |v| Result.string(),
+            else => RuntimeError.TypeError,
+        };
+    }
+
+    pub fn eval(self: *Intepreter, expr: *Expr) RuntimeError!Result {
+        _ = self;
+        return switch (expr.kind) {
+            .add => |v| try self.evalAdd(v),
+            // .sub => |v| Result.num((try (try v.left.eval()).expect(.num)).num - (try (try v.right.eval()).expect(.num)).num),
+            .sub => |v| Result.num((try (try self.eval(v.left)).expect(.num)).num - (try (try self.eval(v.right)).expect(.num)).num),
+            // .mul => |v| Result.num((try (try v.left.eval()).expect(.num)).num * (try (try v.right.eval()).expect(.num)).num),
+            // .div => |v| Result.num((try (try v.left.eval()).expect(.num)).num / (try (try v.right.eval()).expect(.num)).num),
+            // .minus => |v| Result.num(-(try (try v.eval()).expect(.num)).num),
+            .num => |v| Result.num(v),
+            // .not => |v| Result.boolean(!(try (try v.eval()).expect(.boolean)).boolean),
+            // .boolean => |v| Result.boolean(v),
+            .string => |v| Result.string(v),
+            else => RuntimeError.NotImplemented,
         };
     }
 
     pub fn run(self: *Intepreter, source: []const u8) !void {
         var scanner = Scanner.init(source);
-        var tokens = try scanner.scan(self.allocator);
-        var parser = Parser.init(tokens, self.allocator);
+        var tokens = try scanner.scan(&self.arena.allocator);
+        var parser = Parser.init(tokens, &self.arena.allocator);
         defer parser.deinit();
-        defer self.allocator.free(tokens);
+        defer self.arena.allocator.free(tokens);
 
         std.log.info("{a}", .{tokens});
 
@@ -752,8 +783,10 @@ const Intepreter = struct {
         try e.print(stdout);
         try stdout.writeAll("\n");
 
-        if (e.eval()) |value| {
-            try stdout.print("{}\n", .{value});
+        if (self.eval(e)) |value| {
+            // try stdout.print("{}\n", .{value});
+            try value.print(stdout);
+            try stdout.writeAll("\n");
         } else |err| {
             try stdout.print("RuntimeError: {}\n", .{err});
         }
@@ -761,7 +794,7 @@ const Intepreter = struct {
 
     pub fn runFile(self: *Intepreter, filename: []const u8) !void {
         var file = try std.fs.cwd().openFile(filename, .{});
-        var contents = try file.readToEndAlloc(self.allocator, 1073741824);
+        var contents = try file.readToEndAlloc(&self.arena.allocator, 1073741824);
 
         return self.run(contents);
     }
