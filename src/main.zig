@@ -13,7 +13,9 @@ pub const log_level: std.log.Level = .info;
 // Grammar:
 //
 //
-// program              ::= statement* EOF ;
+// program              ::= declaration* EOF ;
+// declaration          ::= var_declaration | statement ;
+// var_declaration      ::= "var" identifier ("=" expression)? ";" ;
 // statement            ::= expression_statement | print_statement ;
 // expression_statement ::= expression ";"
 // print_statement      ::= "print" expression ";"
@@ -24,10 +26,11 @@ pub const log_level: std.log.Level = .info;
 // term                 ::= factor (("+" | "-") factor)* ;
 // factor               ::= unary (("*" | "\") unary)* ;
 // unary                ::= ("!", "-") unary | primary ;
-// primary              ::= number | string | boolean | "nil" | "(" expression ")" ;
+// primary              ::= number | string | boolean | "nil" | "(" expression ")" | identifier ;
 // number               ::= {insert some number regex here}
 // string               ::= """ [character]* """ ;
 // boolean              ::= "true" | "false" ;
+// identifier           ::=
 //
 
 const ExprKind = union(enum) {
@@ -53,6 +56,9 @@ const ExprKind = union(enum) {
     boolean: bool,
     nil: void,
     string: []const u8,
+
+    // TODO: string interning?
+    identifier: []const u8,
 };
 
 const BinaryExpr = struct {
@@ -65,12 +71,14 @@ const RuntimeError = error{
     NotImplemented,
     OutOfMemory,
     IOError,
+    VariableNotFound,
 };
 
 const Result = union(enum) {
     num: f64,
     boolean: bool,
     string: []const u8,
+    nil: void,
 
     pub fn num(val: f64) Result {
         return .{ .num = val };
@@ -82,6 +90,10 @@ const Result = union(enum) {
 
     pub fn string(val: []const u8) Result {
         return .{ .string = val };
+    }
+
+    pub fn nil() Result {
+        return .{ .nil = undefined };
     }
 
     pub fn expect(self: *Result, kind: std.meta.Tag(Result)) RuntimeError!*Result {
@@ -103,6 +115,9 @@ const Result = union(enum) {
             .string => |v| {
                 try wr.print("\"{s}\"", .{v});
             },
+            .nil => {
+                try wr.writeAll("nil");
+            },
         }
     }
 };
@@ -115,9 +130,16 @@ const Program = struct {
 //
 // Basically if I use Stmt = union(enum) { PrintStmt: *Expr, ...} the compiler crashes when I use ArrayList(*Stmt).
 //
+
+const VarDecl = struct {
+    id: *Expr,
+    value: ?*Expr,
+};
+
 const StmtKind = union(enum) {
     PrintStmt: *Expr,
     ExprStmt: *Expr,
+    VarDeclStmt: VarDecl,
 };
 
 const Stmt = struct {
@@ -197,6 +219,10 @@ const Expr = struct {
 
     pub fn string(val: []const u8) Expr {
         return .{ .kind = .{ .string = val } };
+    }
+
+    pub fn identifier(val: []const u8) Expr {
+        return .{ .kind = .{ .identifier = val } };
     }
 
     fn printBinary(op: []const u8, b: *const BinaryExpr, wr: anytype) !void {
@@ -654,6 +680,7 @@ const Parser = struct {
             _ = token;
             var result = switch (token.kind) {
                 .Print => self.parsePrintStmt(),
+                .Var => self.parseVarDecl(),
                 else => self.parseExprStmt(),
             };
 
@@ -665,6 +692,24 @@ const Parser = struct {
         } else {
             return null;
         }
+    }
+
+    pub fn parseVarDecl(self: *Parser) !*Stmt {
+        if (self.match(.Var)) |_| {
+            var id: *Expr = try self.parseExpr();
+            var value: ?*Expr = null;
+
+            if (self.match(.Equal)) |_| {
+                value = try self.parseExpr();
+            }
+
+            var stmt = try self.createStmt();
+            stmt.* = .{ .kind = .{ .VarDeclStmt = .{ .id = id, .value = value } } };
+
+            return stmt;
+        }
+
+        return error.VarTokenMissing;
     }
 
     pub fn parseExprStmt(self: *Parser) !*Stmt {
@@ -807,6 +852,7 @@ const Parser = struct {
                     break :blk exp.*;
                 },
                 .String => |v| Expr.string(v),
+                .Identifier => Expr.identifier(token.string),
                 else => Expr.err(),
             };
         }
@@ -818,11 +864,14 @@ const Parser = struct {
 const Intepreter = struct {
     allocator: Allocator,
     arena: *std.heap.ArenaAllocator,
+    globalVars: std.StringHashMap(Result),
 
     pub fn init(arena: *std.heap.ArenaAllocator) Intepreter {
+        var allocator = arena.allocator();
         return .{
             .arena = arena,
-            .allocator = arena.allocator(),
+            .allocator = allocator,
+            .globalVars = std.StringHashMap(Result).init(allocator),
         };
     }
 
@@ -862,6 +911,7 @@ const Intepreter = struct {
             .num => |v| Result.boolean(v == right.num),
             .string => |v| Result.boolean(std.mem.eql(u8, v, right.string)),
             .boolean => |v| Result.boolean(v == right.boolean),
+            .nil => Result.boolean(right == .nil),
         };
     }
 
@@ -877,6 +927,7 @@ const Intepreter = struct {
             .num => |v| Result.boolean(v != right.num),
             .string => |v| Result.boolean(!std.mem.eql(u8, v, right.string)),
             .boolean => |v| Result.boolean(v != right.boolean),
+            .nil => Result.boolean(right != .nil),
         };
     }
 
@@ -897,6 +948,7 @@ const Intepreter = struct {
             .num => |v| Result.num(v),
             .boolean => |v| Result.boolean(v),
             .string => |v| Result.string(v),
+            .identifier => |name| if (self.globalVars.get(name)) |v| v else RuntimeError.VariableNotFound,
             else => RuntimeError.NotImplemented,
         };
     }
@@ -917,6 +969,21 @@ const Intepreter = struct {
             .ExprStmt => |e| {
                 var result = try self.evalExpr(e);
                 std.log.info("Result: {}", .{result});
+            },
+            .VarDeclStmt => |varDecl| {
+                std.log.info("VarDecl: {}", .{varDecl});
+
+                var value = if (varDecl.value) |valueExpr|
+                    try self.evalExpr(valueExpr)
+                else
+                    Result.nil();
+
+                try self.globalVars.put(try self.allocator.dupe(u8, varDecl.id.kind.identifier), value);
+
+                var it = self.globalVars.iterator();
+                while (it.next()) |entry| {
+                    std.log.info("{s}: {a}", .{ entry.key_ptr.*, entry.value_ptr });
+                }
             },
         }
     }
