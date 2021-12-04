@@ -2,6 +2,7 @@ const std = @import("std");
 const zdf = @import("zdf");
 
 const Args = zdf.Args;
+const Term = zdf.Term;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const stdout = std.io.getStdOut().writer();
@@ -1030,6 +1031,10 @@ const Intepreter = struct {
 
     pub fn runRepl(self: *Intepreter) !void {
         var buf: [1024]u8 = undefined;
+
+        // TODO: User Term rawMode to read ESC, up arrow/down (history) etc.
+        // try Term.enableRawMode();
+        // defer Term.disableRawModeUnsafe();
 
         while (true) {
             try stdout.writeAll("\n> ");
